@@ -7,8 +7,6 @@ use std::cmp::{Ord, Ordering};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Display, Formatter};
-#[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
-use std::os::unix::ffi::OsStrExt;
 use std::rc::Rc;
 use std::str;
 
@@ -20,8 +18,6 @@ use yaml_rust;
 // Internal
 use crate::build::UsageParser;
 use crate::util::Key;
-#[cfg(any(target_os = "windows", target_arch = "wasm32"))]
-use crate::util::OsStrExt3;
 use crate::INTERNAL_ERROR_MSG;
 
 type Validator = Rc<dyn Fn(String) -> Result<(), String>>;
@@ -2265,7 +2261,7 @@ impl<'help> Arg<'help> {
     /// [`ArgMatches::is_present`]: ./struct.ArgMatches.html#method.is_present
     /// [`Arg::default_value_if`]: ./struct.Arg.html#method.default_value_if
     pub fn default_value(self, val: &'help str) -> Self {
-        self.default_value_os(OsStr::from_bytes(val.as_bytes()))
+        self.default_value_os(OsStr::new(val))
     }
 
     /// Provides a default value in the exact same manner as [`Arg::default_value`]
@@ -2382,8 +2378,8 @@ impl<'help> Arg<'help> {
     ) -> Self {
         self.default_value_if_os(
             arg_id,
-            val.map(str::as_bytes).map(OsStr::from_bytes),
-            OsStr::from_bytes(default.as_bytes()),
+            val.map(|v| OsStr::new(v)),
+            OsStr::new(default),
         )
     }
 
@@ -2496,13 +2492,13 @@ impl<'help> Arg<'help> {
     /// [`Arg::default_value`]: ./struct.Arg.html#method.default_value
     pub fn default_value_ifs<T: Key>(
         mut self,
-        ifs: &[(T, Option<&'help str>, &'help str)],
+        ifs: &'help [(T, std::option::Option<&'help str>, &'help str)],
     ) -> Self {
         for (arg, val, default) in ifs {
             self = self.default_value_if_os(
                 arg,
-                val.map(str::as_bytes).map(OsStr::from_bytes),
-                OsStr::from_bytes(default.as_bytes()),
+                val.map(|v| OsStr::new(v)),
+                OsStr::new(default),
             );
         }
         self

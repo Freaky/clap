@@ -23,9 +23,7 @@ use crate::parse::errors::Result as ClapResult;
 use crate::parse::features::suggestions;
 use crate::parse::Validator;
 use crate::parse::{ArgMatcher, SubCommand};
-use crate::util::{self, ChildGraph, Key, OsStrExt2, EMPTY_HASH};
-#[cfg(all(feature = "debug", any(target_os = "windows", target_arch = "wasm32")))]
-use crate::util::OsStrExt3;
+use crate::util::{self, ChildGraph, Key, OsStrOps, EMPTY_HASH};
 use crate::INTERNAL_ERROR_MSG;
 use crate::INVALID_UTF8;
 
@@ -385,6 +383,7 @@ where
         let mut pos_counter = 1;
         while let Some(arg) = it.next() {
             let arg_os = arg.into();
+            let arg_os_ops = OsStrOps::from(&arg_os);
             debugln!(
                 "Parser::get_matches_with: Begin parsing '{:?}' ({:?})",
                 arg_os,
@@ -395,7 +394,7 @@ where
             // Is this a new argument, or values from a previous option?
             let starts_new_arg = self.is_new_arg(&arg_os, needs_val_of);
             if !self.is_set(AS::TrailingValues)
-                && arg_os.starts_with(b"--")
+                && arg_os_ops.starts_with("--")
                 && arg_os.len() == 2
                 && starts_new_arg
             {
@@ -430,7 +429,7 @@ where
                 }
 
                 if starts_new_arg {
-                    if arg_os.starts_with(b"--") {
+                    if arg_os_ops.starts_with("--") {
                         needs_val_of = self.parse_long_arg(matcher, &arg_os)?;
                         debugln!(
                             "Parser:get_matches_with: After parse_long_arg {:?}",
@@ -442,7 +441,7 @@ where
                             }
                             _ => (),
                         }
-                    } else if arg_os.starts_with(b"-") && arg_os.len() != 1 {
+                    } else if arg_os_ops.starts_with("-") && arg_os.len() != 1 {
                         // Try to parse short args like normal, if AllowLeadingHyphen or
                         // AllowNegativeNumbers is set, parse_short_arg will *not* throw
                         // an error, and instead return Ok(None)
@@ -647,7 +646,7 @@ where
                 break;
             } else if !((self.is_set(AS::AllowLeadingHyphen)
                 || self.is_set(AS::AllowNegativeNumbers))
-                && arg_os.starts_with(b"-"))
+                && arg_os_ops.starts_with("-"))
                 && !self.is_set(AS::InferSubcommands)
             {
                 return Err(ClapError::unknown_argument(
@@ -718,17 +717,6 @@ where
     // Checks if the arg matches a subcommand name, or any of it's aliases (if defined)
     fn possible_subcommand(&self, arg_os: &OsStr) -> (bool, Option<&str>) {
         debugln!("Parser::possible_subcommand: arg={:?}", arg_os);
-        fn starts(h: &str, n: &OsStr) -> bool {
-            #[cfg(target_os = "windows")]
-            use crate::util::OsStrExt3;
-            #[cfg(not(target_os = "windows"))]
-            use std::os::unix::ffi::OsStrExt;
-
-            let n_bytes = n.as_bytes();
-            let h_bytes = OsStr::new(h).as_bytes();
-
-            h_bytes.starts_with(n_bytes)
-        }
 
         if self.is_set(AS::ArgsNegateSubcommands) && self.is_set(AS::ValidArgFound) {
             return (false, None);
@@ -738,8 +726,9 @@ where
                 return (true, Some(&sc.name));
             }
         } else {
+            let arg_os_ops = OsStrOps::from(&arg_os);
             let v = sc_names!(self.app)
-                .filter(|s| starts(s, &*arg_os))
+                .filter(|s| arg_os_ops.arg_starts_with(s))
                 .collect::<Vec<_>>();
 
             if v.len() == 1 {
@@ -842,8 +831,10 @@ where
         };
         debugln!("Parser::is_new_arg: arg_allows_tac={:?}", arg_allows_tac);
 
+        let arg_os_ops = OsStrOps::from(&arg_os);
+
         // Is this a new argument, or values from a previous option?
-        let mut ret = if arg_os.starts_with(b"--") {
+        let mut ret = if arg_os_ops.starts_with("--") {
             debugln!("Parser::is_new_arg: -- found");
             if arg_os.len() == 2 && !arg_allows_tac {
                 return true; // We have to return true so override everything else
@@ -851,7 +842,7 @@ where
                 return false;
             }
             true
-        } else if arg_os.starts_with(b"-") {
+        } else if arg_os_ops.starts_with("-") {
             debugln!("Parser::is_new_arg: - found");
             // a singe '-' by itself is a value and typically means "stdin" on unix systems
             arg_os.len() != 1
@@ -1011,18 +1002,22 @@ where
         // Update the curent index
         self.cur_idx.set(self.cur_idx.get() + 1);
 
+        let full_arg_ops = OsStrOps::from(&full_arg);
+
         let mut val = None;
         debug!("Parser::parse_long_arg: Does it contain '='...");
-        let arg = if full_arg.contains_byte(b'=') {
-            let (p0, p1) = full_arg.trim_left_matches(b'-').split_at_byte(b'=');
+        let arg = if full_arg_ops.contains_byte(b'=') {
+            let full_arg_trimmed = full_arg_ops.trim_start_matches(b'-');
+            let full_arg_trimmed_ops = OsStrOps::from(&full_arg_trimmed);
+            let (p0, p1) = full_arg_trimmed_ops.split_at_byte(b'=');
             sdebugln!("Yes '{:?}'", p1);
-            val = Some(p1);
-            p0
+            val = p1.map(|s| s.into_owned());
+            p0.into_owned()
         } else {
             sdebugln!("No");
-            full_arg.trim_left_matches(b'-')
+            full_arg_ops.trim_start_matches(b'-').into_owned()
         };
-        if let Some(opt) = self.app.args.get(&KeyType::Long(arg.into())) {
+        if let Some(opt) = self.app.args.get(&KeyType::Long(arg.clone().into())) {
             debugln!(
                 "Parser::parse_long_arg: Found valid opt or flag '{}'",
                 opt.to_string()
@@ -1032,9 +1027,10 @@ where
             self.seen.push(opt.id);
 
             if opt.is_set(ArgSettings::TakesValue) {
-                return Ok(self.parse_opt(val, opt, val.is_some(), matcher)?);
+                let is_some = val.is_some();
+                return Ok(self.parse_opt(val, opt, is_some, matcher)?);
             }
-            self.check_for_help_and_version_str(arg)?;
+            self.check_for_help_and_version_str(&arg)?;
             self.parse_flag(opt, matcher)?;
 
             return Ok(ParseResult::Flag);
@@ -1056,7 +1052,9 @@ where
         full_arg: &OsStr,
     ) -> ClapResult<ParseResult> {
         debugln!("Parser::parse_short_arg: full_arg={:?}", full_arg);
-        let arg_os = full_arg.trim_left_matches(b'-');
+        let full_arg_ops = OsStrOps::from(&full_arg);
+        let arg_os = full_arg_ops.trim_start_matches(b'-');
+        let arg_os_ops = OsStrOps::from(&arg_os);
         let arg = arg_os.to_string_lossy();
 
         // If AllowLeadingHyphen is set, we want to ensure `-val` gets parsed as `-val` and not
@@ -1116,7 +1114,7 @@ where
                         arg_os.split_at(i).1.as_bytes(),
                         arg_os.split_at(i).1
                     );
-                    Some(arg_os.split_at(i).1)
+                    Some(arg_os_ops.split_at(i).1.into_owned())
                 } else {
                     None
                 };
@@ -1140,7 +1138,7 @@ where
 
     fn parse_opt(
         &self,
-        val: Option<&OsStr>,
+        val: Option<OsString>,
         opt: &Arg<'b>,
         had_eq: bool,
         matcher: &mut ArgMatcher,
@@ -1155,8 +1153,9 @@ where
 
         debug!("Parser::parse_opt; Checking for val...");
         if let Some(fv) = val {
-            has_eq = fv.starts_with(&[b'=']) || had_eq;
-            let v = fv.trim_left_matches(b'=');
+            let fv_ops = OsStrOps::from(&fv);
+            has_eq = fv_ops.starts_with("=") || had_eq;
+            let v = fv_ops.trim_start_matches(b'=');
             if !empty_vals && (v.is_empty() || (needs_eq && !has_eq)) {
                 sdebugln!("Found Empty - Error");
                 return Err(ClapError::empty_value(
@@ -1171,7 +1170,7 @@ where
                 fv,
                 fv.starts_with(&[b'='])
             );
-            self.add_val_to_arg(opt, v, matcher)?;
+            self.add_val_to_arg(opt, &v, matcher)?;
         } else if needs_eq && !(empty_vals || min_vals_zero) {
             sdebugln!("None, but requires equals...Error");
             return Err(ClapError::empty_value(
@@ -1221,11 +1220,12 @@ where
                     Ok(self.add_single_val_to_arg(arg, val, matcher)?)
                 } else {
                     let mut iret = ParseResult::ValuesDone;
-                    for v in val.split(delim as u32 as u8) {
-                        iret = self.add_single_val_to_arg(arg, v, matcher)?;
+                    let val_ops = OsStrOps::from(&val);
+                    for v in val_ops.split(delim as u32 as u8) {
+                        iret = self.add_single_val_to_arg(arg, &v, matcher)?;
                     }
                     // If there was a delimiter used, we're not looking for more values
-                    if val.contains_byte(delim as u32 as u8)
+                    if val_ops.contains_byte(delim as u32 as u8)
                         || arg.is_set(ArgSettings::RequireDelimiter)
                     {
                         iret = ParseResult::ValuesDone;
@@ -1400,8 +1400,8 @@ where
                     sdebugln!(" has conditional defaults");
                     let mut done = false;
                     if $m.get($a.id).is_none() {
-                        for &(arg, val, default) in vm.values() {
-                            let add = if let Some(a) = $m.get(arg) {
+                        for (arg, val, default) in vm.values() {
+                            let add = if let Some(a) = $m.get(*arg) {
                                 if let Some(v) = val {
                                     a.vals.iter().any(|value| v == value)
                                 } else {
@@ -1411,7 +1411,7 @@ where
                                 false
                             };
                             if add {
-                                $_self.add_val_to_arg($a, OsStr::new(default), $m)?;
+                                $_self.add_val_to_arg($a, OsStr::new(&default), $m)?;
                                 done = true;
                                 break;
                             }
